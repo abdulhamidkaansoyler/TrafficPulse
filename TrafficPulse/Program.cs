@@ -19,6 +19,8 @@ namespace TrafficPulse
         [DllImport("kernel32.dll")]
         private static extern bool SetProcessWorkingSetSize(IntPtr proc, int min, int max);
 
+        public static string ApplicationDirectory => AppContext.BaseDirectory;
+
         public static void MinimizeMemory()
         {
             try
@@ -30,7 +32,10 @@ namespace TrafficPulse
                     SetProcessWorkingSetSize(System.Diagnostics.Process.GetCurrentProcess().Handle, -1, -1);
                 }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Memory optimization error: {ex}");
+            }
         }
 
         [STAThread]
@@ -46,36 +51,45 @@ namespace TrafficPulse
         {
             try
             {
-                if (!File.Exists("app.ico"))
+                string iconPath = Path.Combine(ApplicationDirectory, "app.ico");
+                if (!File.Exists(iconPath))
                 {
                     string base64Icon = "AAABAAEAICAAAAAAIAAYAQAAFgAAAIlQTkcNChoKAAAADUlIRFIAAAAgAAAAIAgGAAAAc3p69AAAAN9JREFUeJxjZKi4/p9hAAHTQFo+6gAGBgYGFnSB/+0aNLeUsfIGnD34QgAGkF1JLYAtdAc8BEYdQJIDvjerM+xPlUMR+1CvRj8H/Pzzn4GFiZHBQYmLIkvJdgADAwND/Z7XDI0uIgPngH13vzEwMDAwOFIpFMhKhPV73jA0ulInFMhywIF73xj+/mNgcFKmPBRwloSEQP2eNwytbqIUO4DscuDQ/W8Mv/7+Z2BnYaTIASSFgEDjLRS+85xHFFnOwDDUSsJRB4w6YNQBtAA4CyJ6NM8ZGAZBCDCOdk4H2gEAhHcuOo4cfdcAAAAASUVORK5CYII=";
                     byte[] bytes = Convert.FromBase64String(base64Icon);
-                    File.WriteAllBytes("app.ico", bytes);
+                    File.WriteAllBytes(iconPath, bytes);
                 }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Icon creation error: {ex}");
+            }
         }
     }
 
     class TrayApplicationContext : ApplicationContext
     {
-        private NotifyIcon trayIcon;
-        private Thread monitorThread;
-        private StatsForm statsForm;
-        private ToolStripMenuItem darkModeMenuItem;
-        private ToolStripMenuItem startupMenuItem;
+        private readonly NotifyIcon trayIcon;
+        private readonly Thread monitorThread;
+        private readonly CancellationTokenSource monitorCancellation = new CancellationTokenSource();
+        private StatsForm? statsForm;
+        private readonly ToolStripMenuItem darkModeMenuItem;
+        private readonly ToolStripMenuItem startupMenuItem;
 
         public TrayApplicationContext()
         {
             Icon appIcon = SystemIcons.Application;
             try
             {
-                if (File.Exists("app.ico"))
+                string iconPath = Path.Combine(Program.ApplicationDirectory, "app.ico");
+                if (File.Exists(iconPath))
                 {
-                    appIcon = new Icon("app.ico");
+                    appIcon = new Icon(iconPath);
                 }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Icon loading error: {ex}");
+            }
 
             trayIcon = new NotifyIcon()
             {
@@ -144,9 +158,10 @@ namespace TrafficPulse
             long previousBytesSent = 0;
             bool isFirstRun = true;
 
-            while (true)
+            while (!monitorCancellation.IsCancellationRequested)
             {
-                Thread.Sleep(1000);
+                if (monitorCancellation.Token.WaitHandle.WaitOne(1000))
+                    break;
                 counter++;
 
                 if (counter >= 30)
@@ -157,7 +172,15 @@ namespace TrafficPulse
 
                 long currentBytesReceived = 0;
                 long currentBytesSent = 0;
-                GetTotalTraffic(out currentBytesReceived, out currentBytesSent);
+                try
+                {
+                    GetTotalTraffic(out currentBytesReceived, out currentBytesSent);
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"Network statistics error: {ex}");
+                    continue;
+                }
 
                 if (isFirstRun)
                 {
@@ -225,6 +248,11 @@ namespace TrafficPulse
 
         private void Exit(object sender, EventArgs e)
         {
+            monitorCancellation.Cancel();
+            if (monitorThread.IsAlive)
+            {
+                monitorThread.Join(2000);
+            }
             trayIcon.Visible = false;
             if (statsForm != null && !statsForm.IsDisposed)
             {
@@ -262,12 +290,16 @@ namespace TrafficPulse
 
             try
             {
-                if (File.Exists("app.ico"))
+                string iconPath = Path.Combine(Program.ApplicationDirectory, "app.ico");
+                if (File.Exists(iconPath))
                 {
-                    this.Icon = new Icon("app.ico");
+                    this.Icon = new Icon(iconPath);
                 }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                TrafficManager.LogError("Icon loading error", ex);
+            }
 
             pnlNav = new Panel() { Height = 45, Dock = DockStyle.Top };
 
@@ -385,6 +417,17 @@ namespace TrafficPulse
                 if (currentView == "Daily" && DateTime.TryParseExact(x.Key, "dd-MM-yyyy", CultureInfo.InvariantCulture, DateTimeStyles.None, out DateTime dDate))
                     return dDate;
 
+                if (currentView == "Weekly")
+                {
+                    string[] parts = x.Key.Split(" - Week ", StringSplitOptions.None);
+                    if (parts.Length == 2 && int.TryParse(parts[0], out int weekYear) && int.TryParse(parts[1], out int weekNumber))
+                    {
+                        DateTime januaryFourth = new DateTime(weekYear, 1, 4);
+                        int daysFromMonday = ((int)januaryFourth.DayOfWeek + 6) % 7;
+                        return januaryFourth.AddDays(-daysFromMonday + ((weekNumber - 1) * 7));
+                    }
+                }
+
                 if (currentView == "Monthly" && DateTime.TryParseExact(x.Key, "MMMM yyyy", new CultureInfo("en-US"), DateTimeStyles.None, out DateTime mDate))
                     return mDate;
 
@@ -418,9 +461,10 @@ namespace TrafficPulse
     class TrafficManager
     {
         private static readonly object lockObj = new object();
-        private static string dataFilePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "TrafficPulseData.json");
-        private static string settingsFilePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "TrafficPulseSettings.json");
-        private static string appName = "TrafficPulse";
+        private static readonly string dataDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "TrafficPulse");
+        private static readonly string dataFilePath = Path.Combine(dataDirectory, "TrafficPulseData.json");
+        private static readonly string settingsFilePath = Path.Combine(dataDirectory, "TrafficPulseSettings.json");
+        private const string AppName = "TrafficPulse";
 
         public static bool CheckStartupRegistry()
         {
@@ -428,11 +472,15 @@ namespace TrafficPulse
             {
                 using (RegistryKey key = Registry.CurrentUser.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\Run", false))
                 {
-                    object value = key?.GetValue(appName);
+                    object value = key?.GetValue(AppName);
                     return value != null;
                 }
             }
-            catch { return false; }
+            catch (Exception ex)
+            {
+                LogError("Startup setting could not be read", ex);
+                return false;
+            }
         }
 
         public static bool ToggleStartupRegistry()
@@ -443,21 +491,25 @@ namespace TrafficPulse
                 {
                     if (key == null) return false;
 
-                    object value = key.GetValue(appName);
+                    object value = key.GetValue(AppName);
                     if (value != null)
                     {
-                        key.DeleteValue(appName, false);
+                        key.DeleteValue(AppName, false);
                         return false;
                     }
                     else
                     {
                         string exePath = Application.ExecutablePath;
-                        key.SetValue(appName, $"\"{exePath}\"");
+                        key.SetValue(AppName, $"\"{exePath}\"");
                         return true;
                     }
                 }
             }
-            catch { return false; }
+            catch (Exception ex)
+            {
+                LogError("Startup setting could not be changed", ex);
+                return false;
+            }
         }
 
         public static void AddTraffic(long downloadDelta, long uploadDelta)
@@ -491,7 +543,10 @@ namespace TrafficPulse
                     return JsonSerializer.Deserialize<AppSettings>(json) ?? new AppSettings();
                 }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                LogError("Settings could not be loaded", ex);
+            }
             return new AppSettings();
         }
 
@@ -499,10 +554,16 @@ namespace TrafficPulse
         {
             try
             {
+                Directory.CreateDirectory(dataDirectory);
                 string json = JsonSerializer.Serialize(settings);
-                File.WriteAllText(settingsFilePath, json);
+                string temporaryPath = settingsFilePath + ".tmp";
+                File.WriteAllText(temporaryPath, json);
+                File.Move(temporaryPath, settingsFilePath, true);
             }
-            catch { }
+            catch (Exception ex)
+            {
+                LogError("Settings could not be saved", ex);
+            }
         }
 
         private static bool TryParseDate(string dateStr, out DateTime dt)
@@ -543,14 +604,15 @@ namespace TrafficPulse
         {
             var records = LoadRecords();
             var result = new Dictionary<string, (long Down, long Up)>();
-            CultureInfo ci = CultureInfo.CurrentCulture;
-
             foreach (var r in records)
             {
                 if (TryParseDate(r.Date, out DateTime dt))
                 {
-                    int weekOfYear = ci.Calendar.GetWeekOfYear(dt, CalendarWeekRule.FirstFourDayWeek, DayOfWeek.Monday);
-                    string key = $"{dt.Year} - Week {weekOfYear}";
+                    DateTime thursday = dt.AddDays(3 - (((int)dt.DayOfWeek + 6) % 7));
+                    int isoYear = thursday.Year;
+                    DateTime firstThursday = new DateTime(isoYear, 1, 4);
+                    int weekOfYear = 1 + (int)((thursday.Date - firstThursday.Date).TotalDays / 7);
+                    string key = $"{isoYear} - Week {weekOfYear:00}";
 
                     if (!result.ContainsKey(key))
                         result[key] = (0, 0);
@@ -603,32 +665,52 @@ namespace TrafficPulse
 
         private static List<TrafficRecord> LoadRecords()
         {
-            try
+            lock (lockObj)
             {
-                if (File.Exists(dataFilePath))
+                try
                 {
-                    string json = File.ReadAllText(dataFilePath);
-                    return JsonSerializer.Deserialize<List<TrafficRecord>>(json) ?? new List<TrafficRecord>();
+                    if (File.Exists(dataFilePath))
+                    {
+                        string json = File.ReadAllText(dataFilePath);
+                        return JsonSerializer.Deserialize<List<TrafficRecord>>(json) ?? new List<TrafficRecord>();
+                    }
                 }
+                catch (Exception ex)
+                {
+                    LogError("Traffic data could not be loaded", ex);
+                }
+                return new List<TrafficRecord>();
             }
-            catch { }
-            return new List<TrafficRecord>();
         }
 
         private static void SaveRecords(List<TrafficRecord> records)
         {
-            try
+            lock (lockObj)
             {
-                string json = JsonSerializer.Serialize(records);
-                File.WriteAllText(dataFilePath, json);
+                try
+                {
+                    Directory.CreateDirectory(dataDirectory);
+                    string json = JsonSerializer.Serialize(records);
+                    string temporaryPath = dataFilePath + ".tmp";
+                    File.WriteAllText(temporaryPath, json);
+                    File.Move(temporaryPath, dataFilePath, true);
+                }
+                catch (Exception ex)
+                {
+                    LogError("Traffic data could not be saved", ex);
+                }
             }
-            catch { }
+        }
+
+        internal static void LogError(string message, Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"{message}: {ex}");
         }
     }
 
     class TrafficRecord
     {
-        public string Date { get; set; }
+        public string Date { get; set; } = string.Empty;
         public long DownloadBytes { get; set; }
         public long UploadBytes { get; set; }
     }
