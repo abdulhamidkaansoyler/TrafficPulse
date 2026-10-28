@@ -3,17 +3,16 @@
 A lightweight, system-tray based Windows network traffic monitoring tool built with C# and Windows Forms. TrafficPulse silently runs in the background, providing real-time network speeds and tracking your bandwidth usage over time.
 
 ## Features
-* **Real-Time Speed Monitoring:** Hover over the system tray icon to view your current download (DL) and upload (UL) speeds in dynamically formatted Kbit/s or Mbit/s.
+* **Real-Time Speed Monitoring:** Hover over the system tray icon to view your current download (DL) and upload (UL) speeds in dynamically formatted KB/s or MB/s.
 * **Historical Data Tracking:** Double-click the tray icon to open a detailed statistics window showing your Daily, Weekly, Monthly, and Yearly data consumption in Gigabytes (GB).
-* **Smart Interface Filtering:** Automatically ignores loopback, tunnel, and virtual network adapters (such as VMware, VirtualBox, or WSL) to prevent double-counting and provide strictly accurate internet usage.
-* **Low Resource Footprint:** Optimized with automatic memory minimization routines (using Win32 API and Garbage Collection) to ensure it consumes negligible RAM while running 24/7.
+* **Smart Interface Filtering:** Ignores loopback, tunnel, VPN, and common virtual network adapters (such as VMware, VirtualBox, Hyper-V, or WSL) to reduce double-counting.
+* **Low Resource Footprint:** Uses a background monitoring thread and compact daily records for continuous operation.
 * **Customizable:** Includes a built-in Dark/Light theme toggle and an optional "Start with Windows" registry integration.
 
 ## How It Works (Technical Overview)
-1. **Data Collection:** The application polls active, physical network interfaces every second using the `System.Net.NetworkInformation` namespace.
-2. **Delta Calculation:** It calculates the exact difference in bytes received and sent since the last second, ignoring sudden data spikes caused by adapter reconnections.
-3. **Data Persistence:** Traffic increments are safely logged and accumulated into a local JSON file located at `%AppData%\TrafficPulseData.json` to persist data across system reboots.
-4. **Memory Management:** Every 30 seconds, the application triggers a memory optimization call to keep the background process strictly lightweight.
+1. **Data Collection:** The application polls eligible active network interfaces every second using the `System.Net.NetworkInformation` namespace.
+2. **Delta Calculation:** It tracks each network interface independently and calculates the difference in bytes received and sent since the previous sample. Newly connected interfaces are baselined before their traffic is counted.
+3. **Data Persistence:** Traffic increments are safely logged and accumulated into a local JSON file located at `%AppData%\TrafficPulse\TrafficPulseData.json` to persist data across system reboots.
 
 ## Getting Started
 1. Download or build the project using Visual Studio.
